@@ -522,8 +522,6 @@ function toDesign(x, y) {
 }
 function sizeToScreen(s) { return s * (frame.offsetWidth / DESIGN_W); }
 function sizeToDesign(s) { return s / (frame.offsetWidth / DESIGN_W); }
-
-function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.className = 'toast success';
@@ -636,7 +634,10 @@ function renderSticker(id) {
     el.appendChild(resizeHandle);
 
     el.addEventListener('mousedown', (e) => startStickerDrag(e, id));
-    el.addEventListener('touchstart', (e) => startStickerDrag(e, id), {passive: true});
+    el.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) startStickerDrag(e, id);
+      else if (e.touches.length === 2) startStickerPinch(e, id);
+    }, {passive: true});
 
     stickerLayer.appendChild(el);
   }
@@ -693,6 +694,23 @@ function startStickerDrag(e, id) {
     startClientY: clientY,
     startScreenX: screenPos.x,
     startScreenY: screenPos.y
+  };
+}
+
+// Sticker pinch-rotate+scale state
+let stickerPinch = null;
+
+function startStickerPinch(e, id) {
+  e.preventDefault ? e.preventDefault() : null;
+  selectSticker(id);
+  stickerDrag = null;
+  const s = placedStickers.find(p => p.id === id);
+  stickerPinch = {
+    id,
+    dist0: tDist(e.touches),
+    angle0: tAngle(e.touches),
+    size0: s.size,
+    rot0: s.rotation,
   };
 }
 
@@ -800,16 +818,40 @@ function updateStickerUI() {
 // Global sticker drag/resize listeners
 document.addEventListener('mousemove', onStickerDragMove);
 document.addEventListener('mouseup', onStickerDragEnd);
-document.addEventListener('touchmove', onStickerDragMove, {passive: true});
-document.addEventListener('touchend', onStickerDragEnd, {passive: true});
 document.addEventListener('mousemove', onStickerResizeMove);
 document.addEventListener('mouseup', onStickerResizeEnd);
-document.addEventListener('touchmove', onStickerResizeMove, {passive: true});
-document.addEventListener('touchend', onStickerResizeEnd, {passive: true});
+
+document.addEventListener('touchmove', e => {
+  if (stickerPinch && e.touches.length === 2) {
+    const s = placedStickers.find(p => p.id === stickerPinch.id);
+    if (s) {
+      const dist = tDist(e.touches);
+      const angle = tAngle(e.touches);
+      s.size = Math.max(30, Math.min(300, stickerPinch.size0 * (dist / stickerPinch.dist0)));
+      s.rotation = stickerPinch.rot0 + (angle - stickerPinch.angle0) * 180 / Math.PI;
+      const el = document.getElementById(s.id);
+      if (el) updateStickerTransform(el, s);
+      stickerSizeSlider.value = s.size;
+      stickerSizeOut.textContent = Math.round(s.size) + 'px';
+    }
+  } else if (stickerDrag && e.touches.length === 1) {
+    onStickerDragMove(e);
+  } else if (stickerResize && e.touches.length === 1) {
+    onStickerResizeMove(e);
+  }
+}, {passive: true});
+
+document.addEventListener('touchend', e => {
+  if (e.touches.length === 0) { stickerDrag = null; stickerResize = null; stickerPinch = null; }
+  else if (e.touches.length === 1) { stickerPinch = null; }
+}, {passive: true});
 
 // ========== PHOTO ==========
-// Photo is stored in design coords too
-let photoDesignX = 0, photoDesignY = 0, photoDesignScale = 1;
+// All photo state in design coords. photoRotation in radians.
+let photoDesignX = 0, photoDesignY = 0, photoDesignScale = 1, photoRotation = 0;
+
+// baseScale is the initial fit scale — slider is a multiplier on top of it
+let photoBaseScale = 1;
 
 fileInput.addEventListener("change",e=>{
   const file=e.target.files[0];
@@ -822,16 +864,18 @@ fileInput.addEventListener("change",e=>{
         const nh=userPhoto.naturalHeight;
         const imgRatio=nw/nh;
         const designRatio=DESIGN_W/DESIGN_H;
-        // Fit photo to design canvas
-        const fit=imgRatio>designRatio ? DESIGN_W/nw : DESIGN_H/nh;
+        // Fill (cover) the design canvas so photo fills the case by default
+        const fit=imgRatio>designRatio ? DESIGN_H/nh : DESIGN_W/nw;
         photoDesignScale=fit;
+        photoBaseScale=fit;
         photoDesignX=(DESIGN_W - nw*fit)/2;
         photoDesignY=(DESIGN_H - nh*fit)/2;
-
-        // Update slider to show percentage
-        scaleSlider.value=Math.round(fit*100);
-        scaleOut.textContent=Math.round(fit*100)+"%";
-
+        photoRotation=0;
+        // Slider: 100 = current fit scale, range allows 20%–300% of that
+        scaleSlider.min=20;
+        scaleSlider.max=300;
+        scaleSlider.value=100;
+        scaleOut.textContent="100%";
         isFlipped=false;
         userPhoto.style.display="block";
         applyPhotoTransform();
@@ -847,20 +891,23 @@ fileInput.addEventListener("change",e=>{
 });
 
 function applyPhotoTransform(){
-  const pos = toScreen(photoDesignX, photoDesignY);
-  // Use a single uniform scale factor (width-based) to avoid aspect ratio stretch
   const screenScale = frame.offsetWidth / DESIGN_W;
-  const w = userPhoto.naturalWidth * photoDesignScale * screenScale;
-  const h = userPhoto.naturalHeight * photoDesignScale * screenScale;
-  const flipStr=isFlipped?"scaleX(-1)":"";
+  const nw = userPhoto.naturalWidth;
+  const nh = userPhoto.naturalHeight;
+  const w = nw * photoDesignScale * screenScale;
+  const h = nh * photoDesignScale * screenScale;
+  // Center of photo in screen coords — rotate around center
+  const cx = (photoDesignX + nw * photoDesignScale / 2) * screenScale;
+  const cy = (photoDesignY + nh * photoDesignScale / 2) * screenScale;
+  const flipStr = isFlipped ? ' scaleX(-1)' : '';
   userPhoto.style.cssText=`
     position:absolute;
-    left:${pos.x}px;
-    top:${pos.y}px;
+    left:${cx - w/2}px;
+    top:${cy - h/2}px;
     width:${w}px;
     height:${h}px;
-    transform-origin:top left;
-    transform:${flipStr};
+    transform-origin:center center;
+    transform:rotate(${photoRotation}rad)${flipStr};
     display:${photoLoaded?"block":"none"};
     touch-action:none;
     user-select:none;
@@ -872,11 +919,12 @@ scaleSlider.addEventListener("input",()=>{
   const pct=parseInt(scaleSlider.value)/100;
   const nw=userPhoto.naturalWidth;
   const nh=userPhoto.naturalHeight;
+  const newScale = photoBaseScale * pct;
   const cx=photoDesignX+nw*photoDesignScale/2;
   const cy=photoDesignY+nh*photoDesignScale/2;
-  photoDesignScale=pct;
-  photoDesignX=cx-nw*pct/2;
-  photoDesignY=cy-nh*pct/2;
+  photoDesignScale=newScale;
+  photoDesignX=cx-nw*newScale/2;
+  photoDesignY=cy-nh*newScale/2;
   scaleOut.textContent=Math.round(pct*100)+"%";
   applyPhotoTransform();
 });
@@ -892,7 +940,7 @@ document.getElementById("btn-clear").addEventListener("click",()=>{
   uploadNudge.classList.remove("hidden");
   photoLoaded=false;
   dlBtn.disabled=true;
-  photoDesignX=0;photoDesignY=0;photoDesignScale=1;isFlipped=false;
+  photoDesignX=0;photoDesignY=0;photoDesignScale=1;photoBaseScale=1;photoRotation=0;isFlipped=false;
   scaleSlider.value=100;scaleOut.textContent="100%";
   fileInput.value="";
   placedStickers = [];
@@ -928,41 +976,53 @@ photoLayer.addEventListener("mousedown",e=>{startPhotoDrag(e.clientX,e.clientY);
 document.addEventListener("mousemove",e=>{if(photoDrag)onPhotoDragMove(e.clientX,e.clientY);});
 document.addEventListener("mouseup",onPhotoDragEnd);
 
+// Touch helpers
+function tDist(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);}
+function tAngle(t){return Math.atan2(t[1].clientY-t[0].clientY,t[1].clientX-t[0].clientX);}
+
+// Photo pinch-zoom + rotate
+let photoPinch = null;
 photoLayer.addEventListener("touchstart",e=>{
-  if(e.touches.length===1){startPhotoDrag(e.touches[0].clientX,e.touches[0].clientY);}
-  else if(e.touches.length===2){photoDrag=null;handlePhotoPinchStart(e);}
+  if(e.touches.length===1){
+    photoPinch=null;
+    startPhotoDrag(e.touches[0].clientX,e.touches[0].clientY);
+  } else if(e.touches.length===2){
+    photoDrag=null;
+    photoPinch={
+      dist0: tDist(e.touches),
+      angle0: tAngle(e.touches),
+      scale0: photoDesignScale,
+      rot0: photoRotation,
+      cx0: photoDesignX + userPhoto.naturalWidth*photoDesignScale/2,
+      cy0: photoDesignY + userPhoto.naturalHeight*photoDesignScale/2,
+    };
+  }
 },{passive:true});
 
 document.addEventListener("touchmove",e=>{
-  if(e.touches.length===1&&photoDrag){onPhotoDragMove(e.touches[0].clientX,e.touches[0].clientY);}
-  else if(e.touches.length===2){handlePhotoPinchMove(e);}
+  if(e.touches.length===1&&photoDrag){
+    onPhotoDragMove(e.touches[0].clientX,e.touches[0].clientY);
+  } else if(e.touches.length===2&&photoPinch){
+    const dist = tDist(e.touches);
+    const angle = tAngle(e.touches);
+    const scaleRatio = dist / photoPinch.dist0;
+    const dAngle = angle - photoPinch.angle0;
+    const nw = userPhoto.naturalWidth;
+    const nh = userPhoto.naturalHeight;
+    photoDesignScale = Math.max(0.05, Math.min(5, photoPinch.scale0 * scaleRatio));
+    photoRotation = photoPinch.rot0 + dAngle;
+    photoDesignX = photoPinch.cx0 - nw*photoDesignScale/2;
+    photoDesignY = photoPinch.cy0 - nh*photoDesignScale/2;
+    scaleSlider.value = Math.round(photoDesignScale*100);
+    scaleOut.textContent = Math.round(photoDesignScale*100)+"%";
+    applyPhotoTransform();
+  }
 },{passive:true});
 
 document.addEventListener("touchend",e=>{
-  if(e.touches.length===0){onPhotoDragEnd();}
+  if(e.touches.length===0){onPhotoDragEnd();photoPinch=null;}
+  else if(e.touches.length===1){photoPinch=null;}
 },{passive:true});
-
-// Photo pinch zoom
-let photoPinchDist0=0,photoPinchScale0=1;
-function photoDist(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);}
-function handlePhotoPinchStart(e){
-  photoPinchDist0=photoDist(e.touches);
-  photoPinchScale0=photoDesignScale;
-}
-function handlePhotoPinchMove(e){
-  const d=photoDist(e.touches);
-  const ratio=d/photoPinchDist0;
-  const nw=userPhoto.naturalWidth;
-  const nh=userPhoto.naturalHeight;
-  const cx=photoDesignX+nw*photoDesignScale/2;
-  const cy=photoDesignY+nh*photoDesignScale/2;
-  photoDesignScale=Math.max(0.1,Math.min(5,photoPinchScale0*ratio));
-  photoDesignX=cx-nw*photoDesignScale/2;
-  photoDesignY=cy-nh*photoDesignScale/2;
-  scaleSlider.value=Math.round(photoDesignScale*100);
-  scaleOut.textContent=Math.round(photoDesignScale*100)+"%";
-  applyPhotoTransform();
-}
 
 // ========== DOWNLOAD ==========
 // All positions are already in design coords, just render directly
@@ -981,16 +1041,17 @@ dlBtn.addEventListener("click",async()=>{
   // Layer 2: User photo (behind template)
   if(photoLoaded&&userPhoto.src){
     ctx.save();
-    if(isFlipped){
-      ctx.translate(DESIGN_W,0);
-      ctx.scale(-1,1);
-    }
     const nw=userPhoto.naturalWidth;
     const nh=userPhoto.naturalHeight;
     const pw=nw*photoDesignScale;
     const ph=nh*photoDesignScale;
-    const drawX = isFlipped ? (DESIGN_W - photoDesignX - pw) : photoDesignX;
-    ctx.drawImage(userPhoto,0,0,nw,nh,drawX,photoDesignY,pw,ph);
+    // Center of photo in design coords
+    const cx=photoDesignX+pw/2;
+    const cy=photoDesignY+ph/2;
+    ctx.translate(cx,cy);
+    ctx.rotate(photoRotation);
+    if(isFlipped) ctx.scale(-1,1);
+    ctx.drawImage(userPhoto,0,0,nw,nh,-pw/2,-ph/2,pw,ph);
     ctx.restore();
   }
 
