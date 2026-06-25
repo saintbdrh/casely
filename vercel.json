@@ -1,7 +1,4 @@
 {
   "version": 2,
-  "rewrites": [
-    { "source": "/api/templates", "destination": "/api/templates" },
-    { "source": "/api/stickers", "destination": "/api/stickers" }
-  ]
+  "outputDirectory": "public"
 }
