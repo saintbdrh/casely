@@ -1,11 +1,7 @@
 {
   "version": 2,
-  "routes": [
-    { "src": "/api/templates", "dest": "/api/templates" },
-    { "src": "/api/stickers", "dest": "/api/stickers" },
-    { "src": "/admin", "dest": "/admin.html" },
-    { "src": "/admin.html", "dest": "/admin.html" },
-    { "src": "/", "dest": "/index.html" },
-    { "src": "/index.html", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/api/templates", "destination": "/api/templates" },
+    { "source": "/api/stickers", "destination": "/api/stickers" }
   ]
 }
