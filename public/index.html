@@ -522,6 +522,8 @@ function toDesign(x, y) {
 }
 function sizeToScreen(s) { return s * (frame.offsetWidth / DESIGN_W); }
 function sizeToDesign(s) { return s / (frame.offsetWidth / DESIGN_W); }
+
+function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.className = 'toast success';
